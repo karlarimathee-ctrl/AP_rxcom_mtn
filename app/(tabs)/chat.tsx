@@ -288,63 +288,92 @@ export default function ChatScreen() {
  
     // ─── IMPORTER CONTACTS SIM ────────────────────────────────────────────────
     const importContacts = async () => {
+        // Garde : currentUser doit être chargé
+        if (!currentUser) {
+            alert("Veuillez patienter, chargement du compte en cours…");
+            return;
+        }
+ 
         setLoadingContacts(true);
         try {
+            // 1. Demander la permission contacts
             const { status } = await Contacts.requestPermissionsAsync();
-            if (status !== "granted") { setLoadingContacts(false); return; }
+            if (status !== "granted") {
+                alert("Permission refusée. Autorisez l'accès aux contacts dans les paramètres de votre téléphone.");
+                setLoadingContacts(false);
+                return;
+            }
  
+            // 2. Lire tous les contacts du téléphone
             const { data } = await Contacts.getContactsAsync({
                 fields: [Contacts.Fields.PhoneNumbers, Contacts.Fields.Name],
             });
  
-            const simContacts: { name: string; numero: string }[] = [];
-            data.forEach((c) => {
-                c.phoneNumbers?.forEach((p) => {
-                    let raw = (p.number ?? "").replace(/[\s\-\(\)\.]/g, "");
-                    if (raw.startsWith("+242")) raw = raw.slice(4);
-                    if (raw.startsWith("242"))  raw = raw.slice(3);
-                    if (/^06\d{7}$/.test(raw)) {
-                        simContacts.push({ name: c.name ?? "Inconnu", numero: raw });
-                    }
-                });
-            });
- 
-            const unique = simContacts.filter(
-                (c, i, arr) =>
-                    arr.findIndex((x) => x.numero === c.numero) === i &&
-                    c.numero !== currentUser?.numero
-            );
- 
-            if (unique.length === 0) {
+            if (!data || data.length === 0) {
+                alert("Aucun contact trouvé sur votre téléphone.");
                 setContacts([]);
                 setActiveTab("contacts");
                 setLoadingContacts(false);
                 return;
             }
  
+            // 3. Extraire et normaliser les numéros MTN Congo (06XXXXXXX, 9 chiffres)
+            const simContacts: { name: string; numero: string }[] = [];
+            data.forEach((c) => {
+                c.phoneNumbers?.forEach((p) => {
+                    let raw = (p.number ?? "").replace(/[\s\-\(\)\.\+]/g, "");
+                    if (raw.startsWith("00242"))    raw = raw.slice(5);
+                    else if (raw.startsWith("242")) raw = raw.slice(3);
+                    if (/^06\d{7}$/.test(raw)) {
+                        simContacts.push({ name: c.name ?? "Inconnu", numero: raw });
+                    }
+                });
+            });
+ 
+            // 4. Dédoublonner et exclure le numéro de l'utilisateur connecté
+            const myNumero = currentUser.numero;
+            const unique = simContacts.filter(
+                (c, i, arr) =>
+                    arr.findIndex((x) => x.numero === c.numero) === i &&
+                    c.numero !== myNumero
+            );
+ 
+            if (unique.length === 0) {
+                alert("Aucun numéro MTN Congo (06XXXXXXX) trouvé dans vos contacts.");
+                setContacts([]);
+                setActiveTab("contacts");
+                setLoadingContacts(false);
+                return;
+            }
+ 
+            // 5. Vérifier lesquels ont un compte MTN MoMo Gramm
             const res = await fetch(`${API_URL}/api/check-users`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ numeros: unique.map((c) => c.numero) }),
             });
+ 
+            if (!res.ok) throw new Error(`Erreur serveur (${res.status})`);
             const data2 = await res.json();
  
+            // 6. Enrichir avec les infos du compte
             const enriched: Contact[] = unique.map((c) => {
-                const found = data2.results?.find((r: any) => r.numero === c.numero);
+                const found = (data2.results ?? []).find((r: any) => r.numero === c.numero);
                 return {
                     id: c.numero,
                     name: c.name,
                     numero: c.numero,
                     hasAccount: found?.hasAccount ?? false,
-                    username: found?.username,
+                    username: found?.username ?? null,
                 };
             });
  
             enriched.sort((a, b) => Number(b.hasAccount) - Number(a.hasAccount));
             setContacts(enriched);
             setActiveTab("contacts");
-        } catch (e) {
-            console.error(e);
+        } catch (e: any) {
+            console.error("importContacts error:", e);
+            alert("Erreur lors de l'import : " + (e?.message ?? "Vérifiez votre connexion."));
         } finally {
             setLoadingContacts(false);
         }
