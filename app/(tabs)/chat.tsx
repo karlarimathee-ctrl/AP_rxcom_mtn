@@ -448,14 +448,14 @@ export default function ChatScreen() {
     // ─── ENVOYER MESSAGE ──────────────────────────────────────────────────────
     const sendMessage = async () => {
         if (!newMessage.trim() || !chatContact || sending) return;
-        // Bloquer si le contact n'a pas de compte
-        if ('hasAccount' in chatContact && !chatContact.hasAccount) {
-            alert("Ce contact n'a pas encore de compte MTN MoMo Gramm. Vous ne pouvez pas lui envoyer de message.");
+        // Bloquer uniquement si le contact n'est pas du tout inscrit
+        if ('hasAccount' in chatContact && chatContact.hasAccount === false) {
+            alert("Ce contact n'a pas encore de compte MTN MoMo Gramm.");
             return;
         }
-        // Bloquer si le contact n'a pas de compte
-        if ('hasAccount' in chatContact && !chatContact.hasAccount) {
-            alert("Ce contact n'a pas encore de compte MTN MoMo Gramm. Vous ne pouvez pas lui envoyer de message.");
+        // Bloquer uniquement si le contact n'est pas du tout inscrit
+        if ('hasAccount' in chatContact && chatContact.hasAccount === false) {
+            alert("Ce contact n'a pas encore de compte MTN MoMo Gramm.");
             return;
         }
         const content = newMessage.trim();
@@ -830,6 +830,7 @@ export default function ChatScreen() {
                         />
  
                         {'hasAccount' in (chatContact ?? {}) && !(chatContact as any).hasAccount ? (
+                            // Contact pas inscrit : pas d'envoi possible
                             <View style={styles.noAccountBanner}>
                                 <MaterialIcons name="info-outline" size={16} color="#fff" />
                                 <Text style={[styles.noAccountTxt, { color: "#fff", fontSize: 13, marginTop: 0 }]}>
@@ -837,6 +838,7 @@ export default function ChatScreen() {
                                 </Text>
                             </View>
                         ) : (
+                            // Contact inscrit (connecté ou non) : envoi autorisé
                             <View style={styles.inputRow}>
                                 <TextInput
                                     style={styles.msgInput}

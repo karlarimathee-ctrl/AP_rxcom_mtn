@@ -397,75 +397,77 @@ async function sendPushNotification(pushToken, title, body, data = {}) {
 }
  
 // ─── ENVOYER UN MESSAGE ───────────────────────────────────────────────────────
+// Le message est enregistré même si le destinataire n'est pas connecté.
+// Il le recevra à sa prochaine connexion via le poll ou la notification push.
 app.post('/api/messages/send', (req, res) => {
   const { from_numero, to_numero, content } = req.body;
   if (!from_numero || !to_numero || !content?.trim())
     return res.status(400).json({ error: 'Champs manquants' });
  
-  // Étape 1 : vérifier que l'expéditeur existe
-  db.query('SELECT name FROM users WHERE numero = ?', [from_numero], (errSender, senderRows) => {
-    if (errSender) {
-      console.error('Erreur vérif expéditeur:', errSender.message);
-      return res.status(500).json({ error: 'Erreur base de données (expéditeur)' });
-    }
-    if (senderRows.length === 0)
-      return res.status(403).json({ error: 'Expéditeur non trouvé. Veuillez vous reconnecter.' });
- 
-    const senderName = senderRows[0].name ?? from_numero;
- 
-    // Étape 2 : vérifier que le destinataire existe + récupérer push token
-    db.query(
-      `SELECT u.id, u.name, p.push_token, p.is_online
-       FROM users u
-       LEFT JOIN user_presence p ON p.numero = u.numero
-       WHERE u.numero = ?`,
-      [to_numero],
-      (errRecip, recipRows) => {
-        if (errRecip) {
-          console.error('Erreur vérif destinataire:', errRecip.message);
-          return res.status(500).json({ error: 'Erreur base de données (destinataire)' });
-        }
-        if (recipRows.length === 0)
-          return res.status(404).json({ error: 'Ce contact n\a pas encore de compte MTN MoMo Gramm.' });
- 
-        const recipient = recipRows[0];
- 
-        // Étape 3 : insérer le message
-        db.query(
-          'INSERT INTO messages (from_numero, to_numero, content) VALUES (?, ?, ?)',
-          [from_numero, to_numero, content.trim()],
-          (errInsert, result) => {
-            if (errInsert) {
-              console.error('Erreur INSERT messages:', errInsert.message, errInsert.code);
-              return res.status(500).json({ error: 'Erreur lors de l\'enregistrement du message.' });
-            }
- 
-            // Si le destinataire est en ligne → livraison immédiate
-            if (recipient.is_online) {
-              db.query('UPDATE messages SET is_delivered = 1 WHERE id = ?', [result.insertId], () => {});
-            }
- 
-            // Notification push
-            if (recipient.push_token) {
-              sendPushNotification(
-                recipient.push_token,
-                senderName,
-                content.trim().length > 100 ? content.trim().slice(0, 100) + '…' : content.trim(),
-                { from_numero, to_numero, type: 'message' }
-              );
-            }
- 
-            // Retourner le message complet
-            db.query('SELECT * FROM messages WHERE id = ?', [result.insertId], (errSelect, rows) => {
-              if (errSelect || rows.length === 0)
-                return res.status(201).json({ id: result.insertId, message: 'Message envoyé' });
-              res.status(201).json(rows[0]);
-            });
-          }
-        );
+  // Étape 1 : vérifier expéditeur ET destinataire en une seule requête
+  db.query(
+    'SELECT numero, name FROM users WHERE numero IN (?, ?)',
+    [from_numero, to_numero],
+    (errCheck, userRows) => {
+      if (errCheck) {
+        console.error('Erreur vérif utilisateurs:', errCheck.message);
+        return res.status(500).json({ error: 'Erreur base de données' });
       }
-    );
-  });
+ 
+      const sender    = userRows.find((r) => r.numero === from_numero);
+      const recipient = userRows.find((r) => r.numero === to_numero);
+ 
+      if (!sender)
+        return res.status(403).json({ error: 'Session expirée. Veuillez vous reconnecter.' });
+      if (!recipient)
+        return res.status(404).json({ error: "Ce contact n'a pas encore de compte MTN MoMo Gramm." });
+ 
+      const senderName = sender.name ?? from_numero;
+ 
+      // Étape 2 : insérer le message (fonctionne que le destinataire soit connecté ou non)
+      db.query(
+        'INSERT INTO messages (from_numero, to_numero, content) VALUES (?, ?, ?)',
+        [from_numero, to_numero, content.trim()],
+        (errInsert, result) => {
+          if (errInsert) {
+            console.error('Erreur INSERT messages:', errInsert.message, errInsert.code);
+            return res.status(500).json({ error: "Erreur lors de l'enregistrement du message." });
+          }
+ 
+          // Étape 3 : récupérer présence du destinataire (optionnel, pas bloquant)
+          db.query(
+            'SELECT push_token, is_online FROM user_presence WHERE numero = ?',
+            [to_numero],
+            (errPresence, presenceRows) => {
+              const presence = presenceRows?.[0] ?? { push_token: null, is_online: 0 };
+ 
+              // Si le destinataire est en ligne → livraison immédiate
+              if (presence.is_online) {
+                db.query('UPDATE messages SET is_delivered = 1 WHERE id = ?', [result.insertId], () => {});
+              }
+ 
+              // Notification push si token disponible
+              if (presence.push_token) {
+                sendPushNotification(
+                  presence.push_token,
+                  senderName,
+                  content.trim().length > 100 ? content.trim().slice(0, 100) + '…' : content.trim(),
+                  { from_numero, to_numero, type: 'message' }
+                );
+              }
+ 
+              // Retourner le message complet
+              db.query('SELECT * FROM messages WHERE id = ?', [result.insertId], (errSelect, rows) => {
+                if (errSelect || rows.length === 0)
+                  return res.status(201).json({ id: result.insertId, message: 'Message envoyé' });
+                res.status(201).json(rows[0]);
+              });
+            }
+          );
+        }
+      );
+    }
+  );
 });
  
 // ─── MESSAGES D'UNE CONVERSATION ─────────────────────────────────────────────
