@@ -402,39 +402,50 @@ app.post('/api/messages/send', (req, res) => {
   if (!from_numero || !to_numero || !content?.trim())
     return res.status(400).json({ error: 'Champs manquants' });
  
-  // Vérifier destinataire + récupérer son push token et son nom
-  db.query(
-    `SELECT u.id, u.name, p.push_token, p.is_online
-     FROM users u
-     LEFT JOIN user_presence p ON p.numero = u.numero
-     WHERE u.numero = ?`,
-    [to_numero],
-    (err, results) => {
-      if (err) return res.status(500).json({ error: 'Erreur base de données' });
-      if (results.length === 0)
-        return res.status(404).json({ error: 'Destinataire sans compte MTN MoMo Gramm' });
+  // Étape 1 : vérifier que l'expéditeur existe
+  db.query('SELECT name FROM users WHERE numero = ?', [from_numero], (errSender, senderRows) => {
+    if (errSender) {
+      console.error('Erreur vérif expéditeur:', errSender.message);
+      return res.status(500).json({ error: 'Erreur base de données (expéditeur)' });
+    }
+    if (senderRows.length === 0)
+      return res.status(403).json({ error: 'Expéditeur non trouvé. Veuillez vous reconnecter.' });
  
-      const recipient = results[0];
+    const senderName = senderRows[0].name ?? from_numero;
  
-      // Récupérer le nom de l'expéditeur
-      db.query('SELECT name FROM users WHERE numero = ?', [from_numero], (err2, senderRows) => {
-        const senderName = senderRows?.[0]?.name ?? from_numero;
+    // Étape 2 : vérifier que le destinataire existe + récupérer push token
+    db.query(
+      `SELECT u.id, u.name, p.push_token, p.is_online
+       FROM users u
+       LEFT JOIN user_presence p ON p.numero = u.numero
+       WHERE u.numero = ?`,
+      [to_numero],
+      (errRecip, recipRows) => {
+        if (errRecip) {
+          console.error('Erreur vérif destinataire:', errRecip.message);
+          return res.status(500).json({ error: 'Erreur base de données (destinataire)' });
+        }
+        if (recipRows.length === 0)
+          return res.status(404).json({ error: 'Ce contact n\a pas encore de compte MTN MoMo Gramm.' });
  
+        const recipient = recipRows[0];
+ 
+        // Étape 3 : insérer le message
         db.query(
           'INSERT INTO messages (from_numero, to_numero, content) VALUES (?, ?, ?)',
           [from_numero, to_numero, content.trim()],
-          (err3, result) => {
-            if (err3) {
-              console.error('Erreur INSERT messages:', err3.message, err3.code);
-              return res.status(500).json({ error: 'Erreur envoi message: ' + err3.message });
+          (errInsert, result) => {
+            if (errInsert) {
+              console.error('Erreur INSERT messages:', errInsert.message, errInsert.code);
+              return res.status(500).json({ error: 'Erreur lors de l\'enregistrement du message.' });
             }
  
-            // Si le destinataire est en ligne → marquer comme livré immédiatement
+            // Si le destinataire est en ligne → livraison immédiate
             if (recipient.is_online) {
               db.query('UPDATE messages SET is_delivered = 1 WHERE id = ?', [result.insertId], () => {});
             }
  
-            // Envoyer la notification push (même si en ligne, pour les apps en arrière-plan)
+            // Notification push
             if (recipient.push_token) {
               sendPushNotification(
                 recipient.push_token,
@@ -445,16 +456,16 @@ app.post('/api/messages/send', (req, res) => {
             }
  
             // Retourner le message complet
-            db.query('SELECT * FROM messages WHERE id = ?', [result.insertId], (err4, rows) => {
-              if (err4 || rows.length === 0)
+            db.query('SELECT * FROM messages WHERE id = ?', [result.insertId], (errSelect, rows) => {
+              if (errSelect || rows.length === 0)
                 return res.status(201).json({ id: result.insertId, message: 'Message envoyé' });
               res.status(201).json(rows[0]);
             });
           }
         );
-      });
-    }
-  );
+      }
+    );
+  });
 });
  
 // ─── MESSAGES D'UNE CONVERSATION ─────────────────────────────────────────────

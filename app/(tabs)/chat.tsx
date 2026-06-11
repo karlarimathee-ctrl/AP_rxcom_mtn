@@ -448,6 +448,16 @@ export default function ChatScreen() {
     // ─── ENVOYER MESSAGE ──────────────────────────────────────────────────────
     const sendMessage = async () => {
         if (!newMessage.trim() || !chatContact || sending) return;
+        // Bloquer si le contact n'a pas de compte
+        if ('hasAccount' in chatContact && !chatContact.hasAccount) {
+            alert("Ce contact n'a pas encore de compte MTN MoMo Gramm. Vous ne pouvez pas lui envoyer de message.");
+            return;
+        }
+        // Bloquer si le contact n'a pas de compte
+        if ('hasAccount' in chatContact && !chatContact.hasAccount) {
+            alert("Ce contact n'a pas encore de compte MTN MoMo Gramm. Vous ne pouvez pas lui envoyer de message.");
+            return;
+        }
         const content = newMessage.trim();
         setNewMessage("");
         setSending(true);
@@ -479,15 +489,21 @@ export default function ChatScreen() {
             if (!res.ok) {
                 setMessages((prev) => prev.filter((m) => m.id !== tempMsg.id));
                 setNewMessage(content);
-                const err = await res.json().catch(() => ({}));
-                alert(err.error ?? "Erreur lors de l'envoi du message.");
+                const errBody = await res.json().catch(() => ({}));
+                const errMsg = errBody.error ?? "Erreur lors de l'envoi du message.";
+                // Code 403 = expéditeur non trouvé → déconnecter
+                if (res.status === 403) {
+                    alert(errMsg + "\nVeuillez vous reconnecter.");
+                } else {
+                    alert(errMsg);
+                }
             } else {
                 await loadMessages(chatContact.numero);
             }
-        } catch {
+        } catch (netErr: any) {
             setMessages((prev) => prev.filter((m) => m.id !== tempMsg.id));
             setNewMessage(content);
-            alert("Impossible d'envoyer le message. Vérifiez votre connexion.");
+            alert("Impossible d'envoyer le message. Vérifiez votre connexion internet.");
         } finally {
             setSending(false);
         }
@@ -813,25 +829,34 @@ export default function ChatScreen() {
                             }
                         />
  
-                        <View style={styles.inputRow}>
-                            <TextInput
-                                style={styles.msgInput}
-                                placeholder="Écrire un message…"
-                                placeholderTextColor={MTN.lightGray}
-                                value={newMessage}
-                                onChangeText={setNewMessage}
-                                multiline
-                                maxLength={500}
-                            />
-                            <TouchableOpacity
-                                style={[styles.sendBtn, (!newMessage.trim() || sending) && styles.sendBtnOff]}
-                                onPress={sendMessage}
-                                disabled={!newMessage.trim() || sending}
-                                activeOpacity={0.8}
-                            >
-                                <MaterialIcons name="send" size={20} color={MTN.black} />
-                            </TouchableOpacity>
-                        </View>
+                        {'hasAccount' in (chatContact ?? {}) && !(chatContact as any).hasAccount ? (
+                            <View style={styles.noAccountBanner}>
+                                <MaterialIcons name="info-outline" size={16} color="#fff" />
+                                <Text style={[styles.noAccountTxt, { color: "#fff", fontSize: 13, marginTop: 0 }]}>
+                                    Ce contact n'a pas encore de compte MTN MoMo Gramm
+                                </Text>
+                            </View>
+                        ) : (
+                            <View style={styles.inputRow}>
+                                <TextInput
+                                    style={styles.msgInput}
+                                    placeholder="Écrire un message…"
+                                    placeholderTextColor={MTN.lightGray}
+                                    value={newMessage}
+                                    onChangeText={setNewMessage}
+                                    multiline
+                                    maxLength={500}
+                                />
+                                <TouchableOpacity
+                                    style={[styles.sendBtn, (!newMessage.trim() || sending) && styles.sendBtnOff]}
+                                    onPress={sendMessage}
+                                    disabled={!newMessage.trim() || sending}
+                                    activeOpacity={0.8}
+                                >
+                                    <MaterialIcons name="send" size={20} color={MTN.black} />
+                                </TouchableOpacity>
+                            </View>
+                        )}
                     </KeyboardAvoidingView>
                 </SafeAreaView>
             </Modal>
@@ -920,6 +945,7 @@ const styles = StyleSheet.create({
     contactNumero:    { fontSize: 12, color: MTN.lightGray, marginTop: 1 },
     contactUsername:  { fontSize: 11, color: MTN.yellow, fontWeight: "700", marginTop: 2 },
     noAccountTxt:     { fontSize: 11, color: MTN.error, marginTop: 2, fontWeight: "600" },
+    noAccountBanner:  { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: "#555", paddingHorizontal: 16, paddingVertical: 12 },
     chatBtn: {
         backgroundColor: MTN.yellow, borderRadius: 12,
         width: 38, height: 38, alignItems: "center", justifyContent: "center",
