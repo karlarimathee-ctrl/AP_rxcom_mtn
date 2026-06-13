@@ -51,24 +51,38 @@ db.getConnection((err, connection) => {
   connection.release(); // Libérer la connexion
 });
  
-// ─── Création des tables au démarrage (directement sur le pool) ───────────────
-db.query(`
-  CREATE TABLE IF NOT EXISTS messages (
-    id          INT AUTO_INCREMENT PRIMARY KEY,
-    from_numero VARCHAR(20)   NOT NULL,
-    to_numero   VARCHAR(20)   NOT NULL,
-    content     TEXT          NOT NULL,
-    is_delivered TINYINT(1)    NOT NULL DEFAULT 0,
-    is_read     TINYINT(1)    NOT NULL DEFAULT 0,
-    created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_conv (from_numero, to_numero),
-    INDEX idx_to   (to_numero)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-`, (err) => {
-  if (err) console.error('Erreur création table messages:', err.message);
-  else console.log('Table messages prête');
-  // Ajouter colonne si table existante
-  db.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_delivered TINYINT(1) NOT NULL DEFAULT 0`, () => {});
+// ─── Création des tables au démarrage ────────────────────────────────────────
+// On vérifie d'abord si la table messages a les bonnes colonnes.
+// Si elle existe avec des colonnes sender_id/receiver_id (ancienne version),
+// on la supprime et on la recrée avec from_numero/to_numero.
+db.query(`SHOW COLUMNS FROM messages LIKE 'from_numero'`, (errShow, cols) => {
+  const hasCorrectCols = !errShow && cols && cols.length > 0;
+  if (hasCorrectCols) {
+    // Table correcte → juste ajouter is_delivered si manquant
+    db.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_delivered TINYINT(1) NOT NULL DEFAULT 0`, () => {});
+    console.log('Table messages prête (existante)');
+  } else {
+    // Table absente ou mauvaise structure → DROP + CREATE
+    db.query(`DROP TABLE IF EXISTS messages`, (errDrop) => {
+      if (errDrop) console.error('Erreur DROP messages:', errDrop.message);
+      db.query(`
+        CREATE TABLE messages (
+          id           INT AUTO_INCREMENT PRIMARY KEY,
+          from_numero  VARCHAR(20)  NOT NULL,
+          to_numero    VARCHAR(20)  NOT NULL,
+          content      TEXT         NOT NULL,
+          is_delivered TINYINT(1)   NOT NULL DEFAULT 0,
+          is_read      TINYINT(1)   NOT NULL DEFAULT 0,
+          created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_conv (from_numero, to_numero),
+          INDEX idx_to   (to_numero)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      `, (errCreate) => {
+        if (errCreate) console.error('Erreur CREATE messages:', errCreate.message);
+        else console.log('Table messages créée avec succès');
+      });
+    });
+  }
 });
  
 db.query(`
@@ -555,90 +569,7 @@ app.get('/api/users/search', (req, res) => {
   );
 });
  
-// ─── CONVERSATIONS PAR ID UTILISATEUR ────────────────────────────────────────
-app.get('/api/conversations/:userId', (req, res) => {
-  const userId = parseInt(req.params.userId);
-  if (!userId) return res.status(400).json({ error: 'userId requis' });
- 
-  const query = `
-    SELECT
-      m_last.id,
-      u.id as other_user_id,
-      u.name as other_name,
-      u.username as other_username,
-      m_last.content as last_message,
-      m_last.created_at as last_message_time,
-      (SELECT COUNT(*) FROM messages
-       WHERE sender_id = u.id AND receiver_id = ? AND is_read = 0) as unread_count
-    FROM users u
-    JOIN messages m_last ON m_last.id = (
-      SELECT id FROM messages
-      WHERE (sender_id = ? AND receiver_id = u.id)
-         OR (sender_id = u.id AND receiver_id = ?)
-      ORDER BY created_at DESC LIMIT 1
-    )
-    WHERE u.id != ?
-    ORDER BY m_last.created_at DESC
-  `;
-  db.query(query, [userId, userId, userId, userId], (err, results) => {
-    if (err) {
-      console.error('Erreur conversations:', err);
-      return res.status(500).json({ error: 'Erreur base de données' });
-    }
-    res.json(results);
-  });
-});
- 
-// ─── MESSAGES ENTRE DEUX UTILISATEURS (par ID) ───────────────────────────────
-app.get('/api/messages/:userId/:otherId', (req, res) => {
-  const userId = parseInt(req.params.userId);
-  const otherId = parseInt(req.params.otherId);
-  if (!userId || !otherId) return res.status(400).json({ error: 'IDs requis' });
- 
-  db.query(
-    `SELECT * FROM messages
-     WHERE (sender_id = ? AND receiver_id = ?)
-        OR (sender_id = ? AND receiver_id = ?)
-     ORDER BY created_at ASC`,
-    [userId, otherId, otherId, userId],
-    (err, results) => {
-      if (err) return res.status(500).json({ error: 'Erreur base de données' });
-      res.json(results);
-    }
-  );
-});
- 
-// ─── ENVOYER UN MESSAGE (par ID) ─────────────────────────────────────────────
-app.post('/api/messages', (req, res) => {
-  const { sender_id, receiver_id, content } = req.body;
-  if (!sender_id || !receiver_id || !content?.trim())
-    return res.status(400).json({ error: 'Champs manquants' });
- 
-  db.query(
-    'INSERT INTO messages (sender_id, receiver_id, content, is_read) VALUES (?, ?, ?, 0)',
-    [sender_id, receiver_id, content.trim()],
-    (err, result) => {
-      if (err) {
-        console.error('Erreur insertion message:', err);
-        return res.status(500).json({ error: 'Erreur envoi message' });
-      }
-      res.status(201).json({ id: result.insertId, message: 'Message envoyé' });
-    }
-  );
-});
- 
-// ─── MARQUER MESSAGES LUS (par ID) ───────────────────────────────────────────
-app.put('/api/messages/read', (req, res) => {
-  const { sender_id, receiver_id } = req.body;
-  db.query(
-    'UPDATE messages SET is_read = 1 WHERE sender_id = ? AND receiver_id = ?',
-    [sender_id, receiver_id],
-    (err) => {
-      if (err) return res.status(500).json({ error: 'Erreur' });
-      res.json({ ok: true });
-    }
-  );
-});
+// ─── (routes anciennes par sender_id/receiver_id supprimées — tout passe par from_numero/to_numero) ───
  
  
 // ════════════════════════════════════════════════════════════════════════════
